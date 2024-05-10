@@ -122,3 +122,6 @@ This assignment aims to simulate a simple operating system with memory managemen
 - Cheating, plagiarism, and other anti-intellectual behavior will be dealt with severely
 
 Note: This document is a condensed version of the assignment slides provided by the instructor. Please refer to the original slides for more detailed information and examples.
+
+
+This assignment is from [konkuk university System Software Laboratory](https://sslab.konkuk.ac.kr/)
