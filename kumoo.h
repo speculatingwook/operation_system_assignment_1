@@ -50,9 +50,11 @@ void ku_freelist_init(){
 //    }
 //    printf("\n");
 }
+
 int ku_proc_init(int argc, char *argv[]){
 
 }
+
 int ku_scheduler(unsigned short arg1){
 
 }
