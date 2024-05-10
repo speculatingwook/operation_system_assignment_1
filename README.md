@@ -36,6 +36,43 @@ This assignment aims to simulate a simple operating system with memory managemen
 - `ku_dump_pmem` to dump the contents of physical memory
 - `ku_dump_swap` to dump the contents of swap space
 
+## File Formats
+
+### Input File
+
+- Process ID (ascending order) and executable file
+- Example:
+```text
+0 proc1.txt
+1 proc2.txt
+2 proc1.txt
+```
+- Assume the input file is always correct
+- Maximum number of processes: 10
+- Valid PIDs: 0-9
+
+### Executable File
+
+- File header:
+- `d`: Uninitialized data segment (e.g., `.bss`)
+  - Start virtual address and length
+- Text (`.text`) and initialized data (`.data`) segments are not considered
+- Instructions:
+- `r`: Read a byte from memory
+- `w`: Write a byte (character) to memory
+- `e`: Exit
+- Example:
+```text
+d
+0 100
+r
+40
+w
+50 A
+...
+e
+```
+- Assume the file format is always correct
 
 ## Code skeleton
 
