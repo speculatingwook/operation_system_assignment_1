@@ -159,7 +159,7 @@ int op_write(unsigned short pid){
             pa = ku_traverse(va, 1);
             sorf = 'F';
         }
-    } 
+    }
 
     if (pa < 0){
         printf("%d: %d -> (%c)\n", pid, va, sorf);
