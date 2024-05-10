@@ -23,6 +23,10 @@ typedef struct pcb{
 
 pcb* pcb_head = NULL;
 
+/**
+ *
+ * @return Whether the pcb_head and next pcb is Null
+ */
 int is_empty() {
     if (pcb_head == NULL || pcb_head->next == NULL)
         return 1;
@@ -45,6 +49,14 @@ void print_pcb_list() {
         current = current->next;
         count++;
     }
+}
+
+void print_process_info(pcb* process) {
+    printf("\n");
+    printf("Selected process:\n");
+    printf("  PID: %d\n", process->pid);
+    printf("  File Descriptor: %p\n", (void*)process->fd);
+    printf("  Page Directory: %p\n", (void*)process->pgdir);
 }
 
 void init_page_directory(pcb* new_pcb) {
@@ -94,7 +106,7 @@ void ku_freelist_init(){
     memset(pfnum_freelist, 0, pfnum_bitmap_size);
     memset(sfnum_freelist, 0, sfnum_bitmap_size);
 
-    // 비트맵 출력 (테스트용)
+    // print bitmap for test
 //    printf("Physical Memory Frame Bitmap:\n");
 //    for (int i = 0; i < pfnum_bitmap_size; i++) {
 //        for (int j = 0; j < 8; j++) {
@@ -163,12 +175,71 @@ int ku_proc_init(int argc, char *argv[]){
     // check page directories are not swapped out
 }
 
+/**
+ * - Selects the next process in a round-robin manner(starts from PID 0)
+ * - Updates current and pdbr(page directory base register)
+ * @param arg1 current process ID(10 for the first call)
+ * @return value 0: success
+ *               1: error(no response)
+ */
 int ku_scheduler(unsigned short arg1){
+    // Find the next process in a round-robin manner
+    pcb* next_process = NULL;
 
+    if (arg1 == 10) {
+        // If arg1 is 10, select the first process in the list
+        next_process = pcb_head->next;
+    } else {
+        // Otherwise, find the next process after the current one
+        next_process = current->next;
+        if (next_process == NULL) {
+            // If the end of the list is reached, wrap around to the beginning
+            next_process = pcb_head->next;
+        }
+    }
+
+    if (next_process == NULL) {
+        // No process found with the given PID
+        current = NULL;
+        printf("No process found with PID: %d\n", arg1);
+        return 1; // Error
+    }
+
+    // Update the current process
+    current = next_process;
+
+    // Update the page directory base register (pdbr)
+    pdbr = current->pgdir;
+
+    // Print the selected process information
+    print_process_info(current);
+
+    return 0; // Success
 }
+
+/**
+ * - searches an available page frame(sequential search from PFN 0)
+ * - Performs page eviction(FIFO) and swap-out if there is no available page frame
+ * - Fills the first-loaded page with 0s
+ * - Performs swap-in if the touched page is swapped-out
+ * - updates free lists
+ * - updates PED or PTE
+ *
+ * @param arg1 virtual address that generates a page fault
+ * @return value 0: success
+ *               1: error(segmentation fault or no space)
+ */
 int ku_pgfault_handler(unsigned short arg1){
 
 }
+
+/**
+ * removes PCB
+ * Reaps page frames and swap frames mapped(i.e, updates free lists)
+ * @param arg1 process ID
+ * @return value 0: success
+ *               1: error(invalid PID)
+ */
 int ku_proc_exit(unsigned short arg1){
 
 }
