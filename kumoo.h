@@ -3,11 +3,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define DEBUG	0
+#define TEST	1
+
+const short PDE_MASK = 0b1111100000000000;
+const short PTE_MASK = 0b0000011111000000;
+const short SWAP_MASK = 0b1111111111111100;
+
 struct pcb *current;
 unsigned short *pdbr;
 char *pmem, *swaps;
-int pfnum, sfnum;
+int pfnum = 4;
+int sfnum;
 char *pfnum_freelist, *sfnum_freelist;
+
 
 void ku_dump_pmem(void);
 void ku_dump_swap(void);
@@ -90,12 +99,50 @@ void print_bitmap(char *bitmap, int size, const char *bitmap_name) {
     }
     printf("\n");
 }
+
+void print_binary_short(unsigned short value, const char* label) {
+    printf("%s: ", label);
+    for (int i = sizeof(unsigned short) * 8 - 1; i >= 0; i--) {
+        printf("%d", (value >> i) & 1);
+    }
+    printf("\n");
+}
+
+void print_binary_int(unsigned int value, const char* label) {
+    printf("%s: ", label);
+    for (int i = sizeof(unsigned int) * 8 - 1; i >= 0; i--) {
+        printf("%d", (value >> i) & 1);
+    }
+    printf("\n");
+}
+
+void print_binary_pointer(void* pointer, const char* label) {
+    printf("%s: ", label);
+    for (int i = sizeof(void*) * 8 - 1; i >= 0; i--) {
+        printf("%lu", ((unsigned long)pointer >> i) & 1);
+    }
+    printf("\n");
+}
+
+void print_page_frame_contents(char *pmem, int page_frame_number) {
+    printf("ku_pgfault_handler| Contents of the filled page frame %d:\n", page_frame_number);
+    for (int i = 0; i < 4096; i += 16) {
+        printf("%04X: ", i);
+        for (int j = 0; j < 16; j++) {
+            printf("%02X ", pmem[(page_frame_number * 4096) + i + j]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+}
+
 /* -------------------------------------------------------------------------------------- */
 
 /**
  * - free list initialization with bitmap
  */
 void ku_freelist_init(){
+    pfnum = 4;
     int pfnum_bitmap_size = (pfnum + 7) / 8;
     int sfnum_bitmap_size = (sfnum + 7) / 8;
 
@@ -104,10 +151,6 @@ void ku_freelist_init(){
 
     memset(pfnum_freelist, 0, pfnum_bitmap_size);
     memset(sfnum_freelist, 0, sfnum_bitmap_size);
-
-    // print bitmap for test
-//    print_bitmap(pfnum_freelist, pfnum, "Physical Memory Frame");
-//    print_bitmap(sfnum_freelist, sfnum, "Swap Space Frame");
 }
 
 // Enqueue a page frame number into the queue
@@ -170,15 +213,17 @@ int find_free_swap_frame() {
  * @return pte
  */
 unsigned short* get_pte(unsigned short virtual_address) {
-    unsigned short *pde = pdbr + ((virtual_address >> 10) & 0x3F);
-    printf("get_pte| pde: %p\n", pde);
+    unsigned short *pde = pdbr + ((virtual_address & PDE_MASK) >> 10);
+//    print_binary_short(pde, "get_pte| pde");
+    // pde의 present bit가 0
     if ((*pde & 1) == 0) {
-        // Page directory entry is not valid
+        printf("Page directory entry is not valid\n");
         return NULL;
     }
 
-    unsigned short *page_table = (unsigned short *)(unsigned long)(*pde & 0xFFFFF000);
-    unsigned short *pte = page_table + ((virtual_address >> 4) & 0x3FF);
+    unsigned short* page_table = (unsigned short *)(*pde & 0xFFF0);
+    unsigned short* pte = page_table + ((virtual_address & PTE_MASK) >> 6);
+//    print_binary_short(pte, "get_pte| pte");
     return pte;
 }
 
@@ -201,9 +246,9 @@ int perform_page_replacement_fifo() {
     memcpy(swaps + (swap_frame_number * 4096), pmem + (evicted_page_frame_number * 4096), 4096);
 
     // Update the PTE of the evicted page
-    unsigned short *pte = get_pte(evicted_page_frame_number);
-    *pte = (*pte & 0xFFFE) | (1 << 15); // Set the swapped-out bit
-    *pte = (*pte & 0x1FFF) | (swap_frame_number << 13); // Set the swap frame number
+    unsigned short pte = get_pte(evicted_page_frame_number);
+    pte = (pte & 0xFFFE) | (1 << 15); // Set the swapped-out bit
+    pte = (pte & 0x1FFF) | (swap_frame_number << 13); // Set the swap frame number
 
     // Update the free lists
     pfnum_freelist[evicted_page_frame_number / 8] &= ~(1 << (evicted_page_frame_number % 8)); // Mark the page frame as free
@@ -241,7 +286,7 @@ int insert_pcb_at_head(unsigned short new_pid, const char *file_descriptor){
 
     if (is_empty()) {
         pcb_head->next = new_pcb;
-    } else{
+    } else {
         new_pcb->next = pcb_head -> next;
         pcb_head->next = new_pcb;
     }
@@ -327,7 +372,7 @@ int ku_scheduler(unsigned short arg1){
     if (next_process == NULL) {
         // No process found with the given PID
         current = NULL;
-        printf("No process found with PID: %d\n", arg1);
+        print_binary_short(arg1, "ku_scheduler| No process found with PID");
         return 1; // Error
     }
 
@@ -336,12 +381,50 @@ int ku_scheduler(unsigned short arg1){
 
     // Update the page directory base register (pdbr)
     pdbr = current->pgdir;
-    printf("ku_scheduler| PDBR: %p\n", pdbr);
+//    print_binary_pointer(*pdbr, "ku_scheduler| PDBR");
 
     // Print the selected process information
-    print_process_info(current);
+//    print_process_info(current);
 
     return 0; // Success
+}
+
+int find_available_page_frame() {
+    int page_frame_number = -1;
+    int pfnum_bitmap_size = (pfnum + 7) / 8;
+
+    for (int i = 0; i < pfnum_bitmap_size; i++) {
+        if (pfnum_freelist[i] != (char)0xFF) {
+            for (int j = 0; j < 8; j++) {
+                if ((pfnum_freelist[i] & (1 << j)) == 0) {
+                    page_frame_number = i * 8 + j;
+                    break;
+                }
+            }
+            if (page_frame_number != -1) {
+                break;
+            }
+        }
+    }
+
+    return page_frame_number;
+}
+void mark_page_frame_used(int page_frame_number) {
+    pfnum_freelist[page_frame_number / 8] |= (1 << (page_frame_number % 8)); // Mark the page frame as used
+}
+
+void mark_swap_frame_free(int swap_frame_number) {
+    sfnum_freelist[swap_frame_number / 8] &= ~(1 << (swap_frame_number % 8)); // Mark the swap frame as free
+}
+
+// 이 함수는 주어진 page_frame_number와 swap_frame_number에 따라
+// 각각 페이지 프레임과 스왑 프레임을 업데이트합니다.
+void update_free_lists(int page_frame_number, int swap_frame_number) {
+    mark_page_frame_used(page_frame_number);
+
+    if (swap_frame_number != -1) {
+        mark_swap_frame_free(swap_frame_number);
+    }
 }
 
 /**
@@ -356,117 +439,95 @@ int ku_scheduler(unsigned short arg1){
  * @return value 0: success
  *               1: error(segmentation fault or no space)
  */
-int ku_pgfault_handler(unsigned short arg1){
+int ku_pgfault_handler(unsigned short arg1) {
     unsigned short virtual_address = arg1;
-    printf("ku_pgfault_handler| virtual address: %d\n", virtual_address);
+//    print_binary_short(virtual_address, "ku_pgfault_handler| virtual address");
     int page_frame_number = -1;
     int swap_frame_number = -1;
     int i;
 
     printf("ku_pgfault_handler| Handling page fault for virtual address: 0x%04X\n", virtual_address);
-
-    // Search for an available page frame (sequential search from PFN 0)
-    int pfnum_bitmap_size = (pfnum + 7) / 8;
-    for (i = 0; i < pfnum_bitmap_size; i++) {
-//        print_bitmap(pfnum_freelist, pfnum, "Physical Memory Frame");
-        printf("\n");
-        if (pfnum_freelist[i] != (char)0xFF) {
-            for (int j = 0; j < 8; j++) {
-                if ((pfnum_freelist[i] & (1 << j)) == 0) {
-                    page_frame_number = i * 8 + j;
-                    break;
-                }
-            }
-            printf("ku_pgfault_handler| page frame number: %d\n", page_frame_number);
-            if (page_frame_number != -1) {
-                break;
-            }
-        }
-    }
+    page_frame_number = find_available_page_frame();
 
     if (page_frame_number != -1) {
-        printf("ku_pgfault_handler| Found available page frame: %d\n", page_frame_number);
+//        print_binary_int(page_frame_number, "ku_pgfault_handler| Found available page frame");
     } else {
         printf("ku_pgfault_handler| No available page frame found. Performing page eviction.\n");
     }
 
     // If no available page frame, perform page eviction (FIFO) and swap-out
     if (page_frame_number == -1) {
+//        printf("ku_pgfault_handler| No available page frame found. Performing page eviction.\n");
         page_frame_number = perform_page_replacement_fifo();
         if (page_frame_number == -1) {
-            printf("ku_pgfault_handler| Page fault handling failed. No available page frame and swap frame.\n");
+//            printf("ku_pgfault_handler| Page fault handling failed. No available page frame and swap frame.\n");
             return 1;
         }
-        printf("ku_pgfault_handler| Page eviction performed. Selected page frame: %d\n", page_frame_number);
+//        printf("ku_pgfault_handler| Page eviction performed. Selected page frame: %d\n", page_frame_number);
     }
+    unsigned short* pte = get_pte(virtual_address);
 
-    // Fill the first-loaded page with 0s
-    unsigned short *pte = get_pte(virtual_address);
+//    // perform swap-in if the touched page is swapped-out
+//    if ((*pte & 1) == 0) { // present bit 0
+//        // The page is not present in physical memory
+//        if ((*pte & 0b10) != 0) { // dirty bit 1
+//            // The page is swapped-out
+//            swap_frame_number = (*pte & SWAP_MASK) >> 2;
+//            print_binary_int(swap_frame_number, "ku_pgfault_handler| Performing swap-in. Swap frame number");
+//
+//            // Copy the contents of the swap frame to the page frame
+//            memcpy(pmem + (page_frame_number * 4096), swaps + (swap_frame_number * 4096), 4096);
+////            printf("ku_pgfault_handler| Page swapped-in from swap frame to page frame.\n");
+//        } else {
+//            // The page is not mapped
+////            printf("ku_pgfault_handler| Page is not mapped. Allocating new page frame.\n");
+//
+//            // Fill the new page frame with zeros
+//            memset(pmem + (page_frame_number * 4096), 0, 4096);
+////            printf("ku_pgfault_handler| New page frame filled with zeros.\n");
+//        }
+//
+////        print_binary_short(pte, "ku_pgfault_handler| PTE before update");
+//        *pte = (page_frame_number << 1) | 1;
+////        print_binary_short(pte, "ku_pgfault_handler| PTE after update");
+////        printf("ku_pgfault_handler| Page mapped to page frame %d.\n", page_frame_number);
+//    }
+
+    // 페이지 테이블 새로 할당하는 경우
     if (pte == NULL) {
-        printf("ku_pgfault_handler| Page table not present for virtual address: 0x%04X\n", virtual_address);
+//        printf("ku_pgfault_handler| Page table not present for virtual address: 0x%04X\n", virtual_address);
+        memset(pmem + (page_frame_number * 4096), 0, 4096);
 
         // Page table is not present, allocate a new one
-        unsigned short *page_table = (unsigned short *)malloc(ADDR_SIZE * sizeof(unsigned short));
+        unsigned short* page_table = pmem + (page_frame_number * 4096);
         memset(page_table, 0, ADDR_SIZE * sizeof(unsigned short));
-        printf("ku_pgfault_handler| Allocated new page table at address: %p\n", (void *)page_table);
+//        printf("ku_pgfault_handler| Allocated new page table at address: %p\n", (void *)page_table);
 
         // Update the page directory entry
-        unsigned short *pde = pdbr + ((virtual_address >> 10) & 0x3F);
-        *pde = ((unsigned long)page_table & 0xFFFFF000) | 1;
-        printf("ku_pgfault_handler| Updated PDE at address: %p, value: 0x%04X\n", (void *)pde, *pde);
+        unsigned short* pde = pdbr + ((virtual_address & PDE_MASK) >> 10);
+        *pde = (*pde) & (page_frame_number << 4);
+        *pde = (*pde) & 1;
+        mark_page_frame_used(page_frame_number);
+//        printf("ku_pgfault_handler| Updated PDE at address: %d, value: 0x%04X\n", pde, pde);
 
-        // Get the PTE again after updating the page table
-        pte = get_pte(virtual_address);
-        printf("ku_pgfault_handler| PTE obtained after updating page table: %p\n", (void *)pte);
+        // find new available page frame
+        page_frame_number = find_available_page_frame();
+
+        // Update the page table entry
+        unsigned short* pte = page_table + ((virtual_address & PTE_MASK) >> 6);
+        *pte = (*pte) & (page_frame_number << 4);
+        *pte = (*pte) & 1;
+        mark_page_frame_used(page_frame_number);
+//        printf("ku_pgfault_handler| Updated PTE at address: %d, value: 0x%04X\n", pte, pte);
+
+//        print_page_frame_contents(pmem, page_frame_number);
+        update_free_lists(page_frame_number, swap_frame_number);
     } else {
-        printf("ku_pgfault_handler| PTE found for virtual address: 0x%04X, value: 0x%04X\n", virtual_address, *pte);
-    }
-    printf((*pte & 1) == 0);
-
-    if ((*pte & 1) == 0) {
-        memset(pmem + (page_frame_number * 4096), 0, 4096);
-        printf("ku_pgfault_handler| First-loaded page filled with zeros.\n");
-    }
-
-    // perform swap-in if the touched page is swapped-out
-    if ((*pte & (1 << 15)) != 0) {
-        // The page is swapped-out
-        swap_frame_number = (*pte & 0xE000) >> 13;
-        printf("ku_pgfault_handler| Performing swap-in. Swap frame number: %d\n", swap_frame_number);
-
-        // Copy the contents of the swap frame to the page frame
-        memcpy(pmem + (page_frame_number * 4096), swaps + (swap_frame_number * 4096), 4096);
-        printf("ku_pgfault_handler| Page swapped-in from swap frame to page frame.\n");
-
-        // Update the PTE of the swapped-in page
-        *pte = (*pte & 0x1FFF) | (page_frame_number << 1);
-        *pte &= 0x7FFF;
+        printf("ku_pgfault_handler| PTE found for virtual address: 0x%04X, value: %d\n", virtual_address, pte);
     }
 
     // update free lists
-    pfnum_freelist[page_frame_number / 8] |= (1 << (page_frame_number % 8)); // Mark the page frame as used
-    printf("ku_pgfault_handler| Page frame %d marked as used in the free list.\n", page_frame_number);
-    if (swap_frame_number != -1) {
-        sfnum_freelist[swap_frame_number / 8] &= ~(1 << (swap_frame_number % 8)); // Mark the swap frame as free
-        printf("ku_pgfault_handler| Swap frame %d marked as free in the free list.\n", swap_frame_number);
-    }
-
-    // Update PED or PTE
-    unsigned short *pde = pdbr + ((virtual_address >> 10) & 0x3F);
-    if ((*pde & 1) == 0) {
-        // Page directory entry is not valid, allocate a new page table
-        unsigned short *page_table = (unsigned short *)malloc(ADDR_SIZE * sizeof(unsigned short));
-        memset(page_table, 0, 4096);
-
-        // Update the page directory entry
-        *pde = ((unsigned long)page_table & 0xFFFFF000) | 1;
-        printf("ku_pgfault_handler| New page table allocated and PDE updated.\n");
-    }
-
-    pte = (unsigned short *)((unsigned long)(*pde & 0xFFFFF000) + ((virtual_address >> 4) & 0x3FF));
-    // Set the page frame number and valid bit
-    *pte = (page_frame_number << 1) | 1;
-    printf("ku_pgfault_handler| PTE updated. Virtual address 0x%04X mapped to page frame %d.\n", virtual_address, page_frame_number);
+    update_free_lists(page_frame_number, swap_frame_number);
     return 0; // Success
 }
 
@@ -477,6 +538,63 @@ int ku_pgfault_handler(unsigned short arg1){
  * @return value 0: success
  *               1: error(invalid PID)
  */
-int ku_proc_exit(unsigned short arg1){
+int ku_proc_exit(unsigned short arg1) {
+    pcb* current_pcb = pcb_head->next;
+    pcb* prev_pcb = pcb_head;
 
+    // Find the PCB with the given PID
+    while (current_pcb != NULL) {
+        if (current_pcb->pid == arg1) {
+            break;
+        }
+        prev_pcb = current_pcb;
+        current_pcb = current_pcb->next;
+    }
+
+    // If PCB is not found, return error
+    if (current_pcb == NULL) {
+        printf("ku_proc_exit| Invalid PID: %d\n", arg1);
+        return 1;
+    }
+
+    // Remove the PCB from the linked list
+    prev_pcb->next = current_pcb->next;
+
+    // Reap page frames and swap frames mapped by the process
+    unsigned short* pgdir = current_pcb->pgdir;
+    for (int i = 0; i < ADDR_SIZE; i++) {
+        unsigned short pde = pgdir[i];
+        if (pde & 1) {
+            // Page directory entry is valid
+            unsigned short* page_table = (unsigned short*)(unsigned long)(pde & 0xFFFFF000);
+            for (int j = 0; j < ADDR_SIZE; j++) {
+                unsigned short pte = page_table[j];
+                if (pte & 1) {
+                    // Page table entry is valid
+                    int page_frame_number = pte >> 1;
+                    // Mark the page frame as free in the free list
+                    pfnum_freelist[page_frame_number / 8] &= ~(1 << (page_frame_number % 8));
+                    printf("ku_proc_exit| Page frame %d marked as free\n", page_frame_number);
+                } else if (pte != 0) {
+                    // Page is swapped-out
+                    int swap_frame_number = pte >> 1;
+                    // Mark the swap frame as free in the free list
+                    sfnum_freelist[swap_frame_number / 8] &= ~(1 << (swap_frame_number % 8));
+                    printf("ku_proc_exit| Swap frame %d marked as free\n", swap_frame_number);
+                }
+            }
+            // Free the page table
+            free(page_table);
+        }
+    }
+
+    // Free the page directory
+    free(pgdir);
+
+    // Free the PCB
+    fclose(current_pcb->fd);
+    free(current_pcb);
+
+    printf("ku_proc_exit| Process %d exited successfully\n", arg1);
+    return 0;
 }
